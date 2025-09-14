@@ -40,6 +40,7 @@ narwhals==2.4.0
 networkx==3.5
 numba==0.61.2
 numpy==2.2.6
+ollama==0.5.3
 openai==1.107.0
 openai-whisper==20250625
 packaging==25.0
