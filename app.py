@@ -134,6 +134,8 @@ def generate_srt_from_segments(segments, target_language="English"):
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="AI Content Repurposing Studio", layout="wide")
 
+# ---------- In your app.py, find and replace this entire block ----------
+
 st.markdown(
     """<style>
     .clip-title { cursor: pointer; color: white; font-weight: bold; transition: color 0.2s ease-in-out; }
@@ -143,19 +145,22 @@ st.markdown(
     [data-testid="stButton"] > button:not([type="primary"]) { background-color: #44444A; color: #FFFFFF; border: 1px solid #44444A; padding: 0.7rem 1.5rem; border-radius: 10px; transition: transform 0.2s ease-in-out; }
     [data-testid="stButton"] > button:not([type="primary"]):hover { background-color: #55555E; border-color: #00FFAA; transform: scale(1.03); }
     
-    /* UPDATED: Styles for the copy-to-clipboard button */
+    /* UPDATED: More robust styling for the copy-to-clipboard component */
     .st-copy-to-clipboard-container {
         border: none !important;
         background: transparent !important;
         padding: 0 !important;
         margin-top: 10px;
     }
+    .st-copy-to-clipboard-container input {
+        display: none !important; /* This line hides the text input field (the "white box") */
+    }
     .st-copy-to-clipboard-container button {
         background-color: #44444A !important;
         color: #FFFFFF !important;
         border: 1px solid #44444A !important;
         border-radius: 10px !important;
-        width: 100% !important; /* Make button take full width of its column */
+        width: 100% !important;
         display: inline-flex !important;
         justify-content: center;
         align-items: center;
@@ -323,17 +328,36 @@ if st.session_state.stage == "create":
 
     with create_tab:
         st.header("🎨 Creation Studio")
-        with st.expander("✨ Key Summary"): st.write(st.session_state.summary)
+        with st.expander("✨ Key Summary"):
+            st.container(border=True).write(st.session_state.summary)
+
+        st.divider()
+        post_target_language = st.selectbox(
+            "Translate Post to Language", 
+            options=["Original (English)", "Spanish", "French", "German", "Hindi", "Chinese", "Japanese", "Arabic"], 
+            key="create_lang_select"
+        )
+        
         st.divider()
         tone_preset = st.selectbox("Tone preset", options=["Witty, concise, emojis", "Professional & formal", "Motivational & upbeat", "Casual conversational", "Emotional & heartfelt", "Informative & educational", "Persuasive & promotional", "Humorous & sarcastic", "Inspirational thought-leader", "Storytelling / narrative"])
+        
         st.divider()
         platform_choice = st.selectbox("📌 Select a platform:",["▶️ YouTube", "🎵 TikTok", "🐦 Twitter", "👨‍💼 LinkedIn", "🌍 All Platforms"])
+        
         if st.button("✨ Generate Post", use_container_width=True, type="primary"):
             platforms = ["YouTube", "TikTok", "Twitter", "LinkedIn"] if platform_choice=="🌍 All Platforms" else [platform_choice.split(" ",1)[1]]
             with st.spinner("Generating posts..."):
                 for p in platforms:
-                    post = generate_platform_post(st.session_state.summary, p, tone_preset)
-                    st.session_state.generated[p] = post
+                    # UPDATED: Added translation step for generated posts
+                    base_post = generate_platform_post(st.session_state.summary, p, tone_preset)
+                    
+                    if post_target_language != "Original (English)":
+                        final_post = translate_text(base_post, post_target_language)
+                    else:
+                        final_post = base_post
+                    
+                    st.session_state.generated[p] = final_post
+        
         if st.session_state.get("generated"):
             for platform, post in st.session_state.generated.items():
                 st.subheader(f"{platform} Post"); st.text_area(f"{platform} Post Content", value=post, height=140, key=f"post_text_{platform}")
@@ -346,7 +370,6 @@ if st.session_state.stage == "create":
                             improved_post = auto_upgrade_post(post, platform, tone_preset)
                             st.session_state.generated[platform] = improved_post
                         st.rerun()
-
     st.divider()
     _, center_col, _ = st.columns([2, 1, 2])
     with center_col:
