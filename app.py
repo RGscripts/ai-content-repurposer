@@ -42,51 +42,56 @@ def ffmpeg_cut(input_path, start_s, duration_s, out_path):
         subprocess.run(cmd2, check=True)
         return True
 
-def ffmpeg_burn_subtitles(input_clip_path, srt_path, output_clip_path):
-    safe_srt_path = str(srt_path).replace('\\', '/').replace(':', '\\:')
-    vf_string = f"subtitles=filename='{safe_srt_path}'"
+def ffmpeg_burn_subtitles(input_clip_path, ass_path, output_clip_path):
+    """Burns subtitles from a styled .ass file onto a video clip."""
+    safe_ass_path = str(ass_path).replace('\\', '/').replace(':', '\\:')
+    vf_string = f"subtitles=filename='{safe_ass_path}'"
     cmd = ["ffmpeg", "-y", "-i", str(input_clip_path), "-vf", vf_string, "-c:a", "copy", str(output_clip_path)]
+    print("Running FFmpeg Command:", " ".join(cmd))
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Error burning subtitles: {e.stderr.decode()}")
+        print(f"Audio copy failed, trying re-encode. Error: {e.stderr.decode()}")
         cmd2 = ["ffmpeg", "-y", "-i", str(input_clip_path), "-vf", vf_string, "-c:a", "aac", str(output_clip_path)]
-        subprocess.run(cmd2, check=True)
-        return True
+        print("Running FFmpeg Command (fallback):", " ".join(cmd2))
+        try:
+            subprocess.run(cmd2, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            return True
+        except subprocess.CalledProcessError as e2:
+            print(f"Error burning subtitles (fallback attempt): {e2.stderr.decode()}")
+            return False
 
-def generate_single_clip(clip_index, start_time, duration, target_language, uploaded_file, clip_segments, custom_text):
+def generate_single_clip(clip_index, start_time, duration, target_language, clip_segments, custom_text):
     try:
         temp_dir = Path(tempfile.gettempdir())
         raw_clip_path = temp_dir / f"raw_clip_{clip_index+1}.mp4"
-        srt_path = temp_dir / f"subs_{clip_index+1}.srt"
+        ass_path = temp_dir / f"subs_{clip_index+1}.ass"
         final_clip_path = temp_dir / f"final_clip_{clip_index+1}.mp4"
         clip_key = f"clip_path_{clip_index}"
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp_video:
-            tmp_video.write(uploaded_file.getvalue())
-            ffmpeg_cut(tmp_video.name, start_time, duration, raw_clip_path)
-
-        if target_language != "Original":
-            adjusted_segments_for_srt = [{'start': 0, 'end': duration, 'text': custom_text}]
-            srt_content, final_translated_text = generate_srt_from_segments(adjusted_segments_for_srt, target_language)
-            with open(srt_path, "w", encoding="utf-8") as srt_file: srt_file.write(srt_content)
-            
-            ffmpeg_burn_subtitles(raw_clip_path, srt_path, final_clip_path)
-            st.session_state[clip_key] = str(final_clip_path)
-            return str(final_clip_path), final_translated_text
-        else:
-            st.session_state[clip_key] = str(raw_clip_path)
-            return str(raw_clip_path), custom_text
+        video_file_path = st.session_state.uploaded_file_path
+        ffmpeg_cut(video_file_path, start_time, duration, raw_clip_path)
+        adjusted_segments = []
+        for seg in clip_segments:
+            new_start = max(0, seg['start'] - start_time)
+            new_end = min(duration, seg['end'] - start_time)
+            if new_start < new_end:
+                adjusted_segments.append({'start': new_start, 'end': new_end, 'text': seg['text']})
+        ass_content, final_translated_text = generate_ass_from_segments(adjusted_segments, target_language)
+        with open(ass_path, "w", encoding="utf-8") as ass_file:
+            ass_file.write(ass_content)
+        ffmpeg_burn_subtitles(raw_clip_path, ass_path, final_clip_path)
+        st.session_state[clip_key] = str(final_clip_path)
+        return str(final_clip_path), final_translated_text
     except Exception as e:
         st.error(f"Failed to generate Clip {clip_index + 1}: {e}")
         return None, None
 
-def handle_generate_clip_click(clip_index, start_time, duration, target_language, uploaded_file, clip_segments):
+def handle_generate_clip_click(clip_index, start_time, duration, target_language, clip_segments):
     text_key = f"custom_text_{clip_index}"
     custom_text = st.session_state[text_key]
     with st.spinner(f"Generating Clip {clip_index+1}..."):
-        clip_path, translated_text = generate_single_clip(clip_index, start_time, duration, target_language, uploaded_file, clip_segments, custom_text)
+        clip_path, translated_text = generate_single_clip(clip_index, start_time, duration, target_language, clip_segments, custom_text)
         if clip_path and translated_text:
             st.session_state[text_key] = translated_text
             st.toast(f"✅ Clip {clip_index+1} generated successfully!")
@@ -115,26 +120,43 @@ def render_tips_box(tone):
     tips_html += "</div>"
     st.markdown(tips_html, unsafe_allow_html=True)
 
-def generate_srt_from_segments(segments, target_language="English"):
-    srt_content = ""; full_translated_text = []
-    for i, seg in enumerate(segments):
+def generate_ass_from_segments(segments, target_language="English"):
+    """Generates a styled .ass subtitle file string from timed segments."""
+    font_file_path = os.path.join(os.getcwd(), 'fonts', 'Roboto-Regular.ttf').replace('\\', '/')
+    Path(os.path.dirname(font_file_path)).mkdir(parents=True, exist_ok=True)
+    if not Path(font_file_path).exists():
+        print(f"WARNING: Font file not found at {font_file_path}. Subtitles might not render correctly.")
+    ass_header = f"""[Script Info]
+Title: Generated Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: None
+PlayResX: 1280
+PlayResY: 720
+Font: {font_file_path}
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Roboto Regular,22,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1.5,1,2,10,10,25,1
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    ass_dialogue = ""
+    full_translated_text = []
+    for seg in segments:
         start_time = seg.get("start", 0)
         end_time = seg.get("end", 0)
         text = seg.get("text", "").strip()
-        start_srt = f"{int(start_time//3600):02}:{int((start_time%3600)//60):02}:{int(start_time%60):02},{int((start_time*1000)%1000):03}"
-        end_srt = f"{int(end_time//3600):02}:{int((end_time%3600)//60):02}:{int(end_time%60):02},{int((end_time*1000)%1000):03}"
-        
+        start_ass = f"{int(start_time//3600)}:{int((start_time%3600)//60):02}:{int(start_time%60):02}.{int((start_time*100)%100):02}"
+        end_ass = f"{int(end_time//3600)}:{int((end_time%3600)//60):02}:{int(end_time%60):02}.{int((end_time*100)%100):02}"
         translated_text = translate_text(text, target_language) if target_language != "Original" else text
         full_translated_text.append(translated_text)
-        
-        srt_content += f"{i+1}\n{start_srt} --> {end_srt}\n{translated_text}\n\n"
-        
-    return srt_content, " ".join(full_translated_text)
-    
-# ---------- Streamlit UI ----------
-st.set_page_config(page_title="AI Content Repurposing Studio", layout="wide")
+        cleaned_text = translated_text.replace('\n', '\\N').replace('{', '\\{').replace('}', '\\}')
+        ass_dialogue += f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{cleaned_text}\n"
+    return ass_header + ass_dialogue, " ".join(full_translated_text)
 
-# ---------- In your app.py, find and replace this entire block ----------
+# ---------- Streamlit UI ----------
+st.set_page_config(page_title="ViralSpark Studio", layout="wide")
 
 st.markdown(
     """<style>
@@ -144,53 +166,35 @@ st.markdown(
     [data-testid="stButton"] > button[type="primary"]:hover { transform: scale(1.03); background: linear-gradient(90deg, #00FFC7, #00B9FF); }
     [data-testid="stButton"] > button:not([type="primary"]) { background-color: #44444A; color: #FFFFFF; border: 1px solid #44444A; padding: 0.7rem 1.5rem; border-radius: 10px; transition: transform 0.2s ease-in-out; }
     [data-testid="stButton"] > button:not([type="primary"]):hover { background-color: #55555E; border-color: #00FFAA; transform: scale(1.03); }
-    
-    /* UPDATED: More robust styling for the copy-to-clipboard component */
-    .st-copy-to-clipboard-container {
-        border: none !important;
-        background: transparent !important;
-        padding: 0 !important;
-        margin-top: 10px;
-    }
-    .st-copy-to-clipboard-container input {
-        display: none !important; /* This line hides the text input field (the "white box") */
-    }
-    .st-copy-to-clipboard-container button {
-        background-color: #44444A !important;
-        color: #FFFFFF !important;
-        border: 1px solid #44444A !important;
-        border-radius: 10px !important;
-        width: 100% !important;
-        display: inline-flex !important;
-        justify-content: center;
-        align-items: center;
-        font-size: 1.2em !important;
-    }
-    .st-copy-to-clipboard-container button:hover {
-        border-color: #00FFAA !important;
-        color: #00FFAA !important;
-        transform: scale(1.03);
-    }
-
+    .st-copy-to-clipboard-container { border: none !important; background: transparent !important; padding: 0 !important; margin-top: 10px; }
+    .st-copy-to-clipboard-container input { display: none !important; }
+    .st-copy-to-clipboard-container button { background-color: #44444A !important; color: #FFFFFF !important; border: 1px solid #44444A !important; border-radius: 10px !important; width: 100% !important; display: inline-flex !important; justify-content: center; align-items: center; font-size: 1.2em !important; }
+    .st-copy-to-clipboard-container button:hover { border-color: #00FFAA !important; color: #00FFAA !important; transform: scale(1.03); }
     .custom-info { background-color: #1F2026; border: 1px solid #00FFAA; border-left-width: 5px; padding: 0.8rem; border-radius: 8px; margin-bottom: 10px; color: #DDDDDD; }
     [data-baseweb="tab-list"] button[aria-selected="true"] { border-bottom-color: #00FFAA !important; color: #00FFAA !important; }
     </style>""",
     unsafe_allow_html=True
 )
 
-st.markdown("""<div style="text-align: center; padding: 1rem; 
-               background: #262730; border-radius: 10px; margin-bottom: 1rem;">
+# THIS IS THE ONLY SECTION THAT HAS BEEN CHANGED
+# It correctly renders the header without showing raw HTML code.
+st.markdown("""
+<div style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 1rem; 
+            background: #262730; border-radius: 10px; margin-bottom: 1rem;">
     <h1 style="background: -webkit-linear-gradient(45deg, #00FFAA, #FF00AA); 
-               -webkit-background-clip: text; 
-               -webkit-text-fill-color: transparent;
-               font-size: 2.8em;">
-        🚀 AI Content Repurposing Studio
+                -webkit-background-clip: text; 
+                -webkit-text-fill-color: transparent;
+                font-size: 2.8em; margin-bottom: 0.5rem;">
+        🚀 ViralSpark Studio
     </h1>
-    <h3 style="font-weight: 600; color: #DDDDDD;">Create once → Publish everywhere 🎯</h3>
-    <p style="font-size: 1.05rem; color: #AAAAAA;">
+    <h3 style="font-weight: 600; color: #DDDDDD; margin: 0;">
+        Create once → Publish everywhere 🎯
+    </h3>
+    <p style="font-size: 1.05rem; color: #AAAAAA; margin-top: 0.5rem;">
         Instantly generate clips, posts, and translated subtitles from any video
     </p>
-</div>""", unsafe_allow_html=True)
+</div>
+""", unsafe_allow_html=True)
 
 default_state = {"stage": "input", "segments": [], "transcript": "", "summary": "", "generated": {}, "clips": [], "uploaded_file": None, "article_text": "", "translated_text": "", "srt_captions": "", "analyze_clicked": False}
 for key, val in default_state.items():
@@ -231,10 +235,13 @@ if st.session_state.stage == "input":
                 if uploaded:
                     update_progress(1)
                     with st.spinner("Transcribing... ⏳"):
-                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded.name).suffix)
-                        tmp.write(uploaded.getvalue()); tmp.flush()
-                        segments, full_text = transcribe_with_whisper(tmp.name, "base")
-                        st.session_state.segments = segments; st.session_state.transcript = full_text; st.session_state.uploaded_file = uploaded
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded.name).suffix) as tmp:
+                            tmp.write(uploaded.getvalue())
+                            st.session_state.uploaded_file_path = tmp.name
+                        segments, full_text = transcribe_with_whisper(st.session_state.uploaded_file_path, "base")
+                        st.session_state.segments = segments
+                        st.session_state.transcript = full_text
+                        st.session_state.uploaded_file = uploaded
                 elif article_text:
                     full_text = article_text; st.session_state.transcript = article_text; st.session_state.article_text = article_text
                 
@@ -269,7 +276,7 @@ if st.session_state.stage == "create":
                 st.subheader("🎬 Full Video Captions (.srt)")
                 if st.button("Generate Full Captions"):
                     with st.spinner(f"Generating captions in {target_language}..."):
-                        srt_content, _ = generate_srt_from_segments(st.session_state.segments, target_language)
+                        srt_content, _ = generate_ass_from_segments (st.session_state.segments, target_language)
                         st.session_state.srt_captions = srt_content
                 if st.session_state.get("srt_captions"):
                     st.text_area("SRT Captions Preview", value=st.session_state.srt_captions, height=150)
@@ -303,23 +310,37 @@ if st.session_state.stage == "create":
                         if st.session_state.get(clip_key):
                             info_col, player_col = st.columns([2, 1])
                             with info_col:
-                                st.markdown(f"**Clip {i+1}**"); st.caption(f"Time: {start_time:.1f}s to {end_time:.1f}s")
+                                st.markdown(f"**Clip {i+1}**")
+                                st.caption(f"Time: {start_time:.1f}s to {end_time:.1f}s")
                                 st.text_area("Subtitle Text", key=text_key, height=100)
                                 st_copy_to_clipboard(st.session_state[text_key], "📋", key=f"copy_subtitle_{i}")
+                            
                             with player_col:
                                 clip_path = st.session_state[clip_key]
                                 if Path(clip_path).exists():
-                                    with open(clip_path, "rb") as f: video_bytes = f.read()
+                                    with open(clip_path, "rb") as f:
+                                        video_bytes = f.read()
+                                    
                                     st.video(video_bytes)
-                                    st.download_button(label="⬇️ Download Clip", data=video_bytes, file_name=Path(clip_path).name, mime="video/mp4", use_container_width=True)
+                                    st.download_button(
+                                        label="⬇️ Download Clip",
+                                        data=video_bytes,
+                                        file_name=Path(clip_path).name,
+                                        mime="video/mp4",
+                                        use_container_width=True
+                                    )
                         else:
-                            st.markdown(f"**Clip {i+1}**"); st.caption(f"Time: {start_time:.1f}s to {end_time:.1f}s")
+                            st.markdown(f"**Clip {i+1}**")
+                            st.caption(f"Time: {start_time:.1f}s to {end_time:.1f}s")
                             st.text_area("Subtitle Text", key=text_key, height=100)
                             st_copy_to_clipboard(st.session_state[text_key], "📋", key=f"copy_subtitle_{i}")
-                            st.button(f"Generate Clip {i+1}", key=f"clip_{i}", use_container_width=True,
-                                      on_click=handle_generate_clip_click,
-                                      args=(i, start_time, clip_len, target_language, st.session_state.uploaded_file, current_clip_segments))
-
+                            st.button(
+                                f"Generate Clip {i+1}",
+                                key=f"clip_{i}",
+                                use_container_width=True,
+                                on_click=handle_generate_clip_click,
+                                args=(i, start_time, clip_len, target_language, current_clip_segments)
+                            )
                 st.divider()
                 
                 if num_clips > 1:
@@ -330,17 +351,14 @@ if st.session_state.stage == "create":
         st.header("🎨 Creation Studio")
         with st.expander("✨ Key Summary"):
             st.container(border=True).write(st.session_state.summary)
-
         st.divider()
         post_target_language = st.selectbox(
             "Translate Post to Language", 
             options=["Original (English)", "Spanish", "French", "German", "Hindi", "Chinese", "Japanese", "Arabic"], 
             key="create_lang_select"
         )
-        
         st.divider()
         tone_preset = st.selectbox("Tone preset", options=["Witty, concise, emojis", "Professional & formal", "Motivational & upbeat", "Casual conversational", "Emotional & heartfelt", "Informative & educational", "Persuasive & promotional", "Humorous & sarcastic", "Inspirational thought-leader", "Storytelling / narrative"])
-        
         st.divider()
         platform_choice = st.selectbox("📌 Select a platform:",["▶️ YouTube", "🎵 TikTok", "🐦 Twitter", "👨‍💼 LinkedIn", "🌍 All Platforms"])
         
@@ -348,7 +366,6 @@ if st.session_state.stage == "create":
             platforms = ["YouTube", "TikTok", "Twitter", "LinkedIn"] if platform_choice=="🌍 All Platforms" else [platform_choice.split(" ",1)[1]]
             with st.spinner("Generating posts..."):
                 for p in platforms:
-                    # UPDATED: Added translation step for generated posts
                     base_post = generate_platform_post(st.session_state.summary, p, tone_preset)
                     
                     if post_target_language != "Original (English)":
@@ -363,12 +380,18 @@ if st.session_state.stage == "create":
                 st.subheader(f"{platform} Post"); st.text_area(f"{platform} Post Content", value=post, height=140, key=f"post_text_{platform}")
                 st_copy_to_clipboard(post, "📋", key=f"copy_{platform}_post")
                 score = heuristics_engagement_score(post); st.markdown(f"**Engagement Score:** {score_label(score)}")
+                
+                # The two 'if' blocks are now combined into one single block
                 if score < 80:
+                    # The tips box is now called only once
                     render_tips_box(tone_preset)
+                    
+                    # The button logic follows inside the same 'if' block
                     if st.button(f"🔧 Auto-Upgrade {platform} Post", key=f"upgrade_{platform}"):
                         with st.spinner("✨ Enhancing post..."):
-                            improved_post = auto_upgrade_post(post, platform, tone_preset)
-                            st.session_state.generated[platform] = improved_post
+                            lang = st.session_state.create_lang_select
+                            improved_post = auto_upgrade_post(post, platform, tone_preset, lang)
+                        st.session_state.generated[platform] = improved_post
                         st.rerun()
     st.divider()
     _, center_col, _ = st.columns([2, 1, 2])

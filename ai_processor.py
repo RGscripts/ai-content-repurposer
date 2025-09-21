@@ -1,7 +1,7 @@
 import ollama
 
 # The model name must match the one you downloaded with 'ollama pull'
-MODEL = 'llama3:8b'
+MODEL = 'gemma:2b'
 
 def get_improvement_tips(tone):
     """Helper function to get context-specific improvement tips."""
@@ -55,7 +55,7 @@ def translate_text(text, target_language):
         if "connection refused" in str(e).lower(): return "Error: Could not connect to the local Ollama server."
         return f"Error: Could not translate text: {e}"
 
-def auto_upgrade_post(post_text, platform, tone):
+def auto_upgrade_post(post_text, platform, tone, language): # NEW: Added 'language' argument
     """Improves a social media post using the local Ollama model based on specific scoring rules."""
     try:
         # --- UPDATED: New, rule-based prompt for the auto-upgrader ---
@@ -71,6 +71,7 @@ def auto_upgrade_post(post_text, platform, tone):
         - **Add Hashtags:** Ensure the post includes 2-3 relevant hashtags at the end.
         - **Include a Call to Action:** If it doesn't have one, add a clear call to action, such as asking a question or using phrases like "follow for more," "share your thoughts," or "link in bio."
         - **Tone:** The tone must be '{tone}'.
+        - **Language:** The final output MUST be written in **{language}**. # NEW: Added language rule
 
         Improved Post (plain text only, no commentary, ready to be copy-pasted):
         """
